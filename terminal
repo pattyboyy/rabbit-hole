@@ -1,0 +1,11 @@
+cd ..
+rm -rf rabbit-hole    # Remove the nested directory
+rm -rf node_modules package-lock.json
+npm install next@14.1.0 react@18.2.0 react-dom@18.2.0
+npm install --save-dev typescript@5.3.3 @types/node@20.11.0 @types/react@18.2.0 @types/react-dom@18.2.0 @types/uuid@9.0.7 @types/d3@7.4.3
+npm install d3@7.9.0 uuid@9.0.1
+npm install react @types/react react-dom @types/react-dom --save
+cat package.json | cat
+pwd
+ls node_modules/next/types
+npm run dev

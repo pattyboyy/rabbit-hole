@@ -1,0 +1,35 @@
+{
+  "name": "rabbit-hole",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@types/xml2js": "^0.4.14",
+    "d3": "7.9.0",
+    "jsdom": "^26.0.0",
+    "next": "14.1.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "uuid": "9.0.1",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "@types/d3": "7.4.3",
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "20.11.0",
+    "@types/react": "18.2.0",
+    "@types/react-dom": "18.2.0",
+    "@types/uuid": "9.0.7",
+    "autoprefixer": "10.4.17",
+    "eslint": "8.56.0",
+    "eslint-config-next": "14.1.0",
+    "postcss": "8.4.33",
+    "tailwindcss": "3.4.1",
+    "typescript": "5.3.3"
+  }
+}
