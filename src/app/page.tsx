@@ -6,11 +6,80 @@ import { useExploration } from '@/context/ExplorationContext';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { LoadingState, defaultLoadingState } from '@/lib/loadingStates';
 
+interface ListItem {
+  text: string;
+  description?: string;
+}
+
+interface TopicContent {
+  text: string;
+  lists?: ListItem[][];
+}
+
+interface ListItemProps {
+  item: ListItem;
+  onItemClick: (item: ListItem) => void;
+  isLoading: boolean;
+}
+
+function ClickableListItem({ item, onItemClick, isLoading }: ListItemProps) {
+  return (
+    <button
+      onClick={() => onItemClick(item)}
+      disabled={isLoading}
+      className="text-left group hover:bg-gray-50 p-2 rounded-md transition-colors w-full"
+    >
+      <div className="flex items-start gap-2">
+        <div className="mt-1.5 flex-shrink-0">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-gray-900 font-medium">{item.text}</p>
+          {item.description && (
+            <p className="text-sm text-gray-600 mt-1">{item.description}</p>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function TopicContent({ content, onItemClick, isLoading }: { 
+  content: TopicContent; 
+  onItemClick: (item: ListItem) => void;
+  isLoading: boolean;
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-lg text-gray-700 leading-relaxed">{content.text}</p>
+      {content.lists && content.lists.length > 0 && (
+        <div className="space-y-6">
+          {content.lists.map((list, listIndex) => (
+            <div key={listIndex} className="space-y-2">
+              {list.map((item, itemIndex) => (
+                <ClickableListItem
+                  key={itemIndex}
+                  item={item}
+                  onItemClick={onItemClick}
+                  isLoading={isLoading}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [searchTerm, setSearchTerm] = useState('');
   const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
   const [loadingState, setLoadingState] = useState<LoadingState>(defaultLoadingState);
   const [error, setError] = useState<string | null>(null);
+  const [showDetailedSummary, setShowDetailedSummary] = useState(false);
   const { addToExploration } = useExploration();
 
   // Reset loading state when component unmounts
@@ -213,6 +282,32 @@ export default function Home() {
     );
   };
 
+  const handleListItemClick = async (item: ListItem) => {
+    if (!currentTopic) return;
+    
+    setError(null);
+    setLoadingState({ isLoading: true, message: 'Starting exploration...', progress: 0 });
+
+    const newPathHistory = [
+      ...currentTopic.pathHistory,
+      { title: currentTopic.title, description: item.description || item.text }
+    ];
+    
+    const pathContext = newPathHistory
+      .map((p, i) => `${i + 1}. ${p.title}`)
+      .join(' > ');
+
+    const explorationContext = `Exploration path: ${pathContext} > ${item.text}. Currently exploring this concept with focus on: ${item.description || item.text}. Please maintain relevance to the entire exploration chain, especially the root topic "${newPathHistory[0].title}".`;
+
+    await handleExplorationRequest(
+      item.text,
+      currentTopic.id,
+      currentTopic.depth + 1,
+      explorationContext,
+      newPathHistory
+    );
+  };
+
   return (
     <div className="min-h-screen flex flex-col p-4 max-w-7xl mx-auto">
       <form onSubmit={handleSearch} className="flex gap-2 mb-6">
@@ -274,7 +369,33 @@ export default function Home() {
 
           <div className="bg-white rounded-lg shadow-sm p-6 space-y-4">
             <h1 className="text-3xl font-bold text-gray-900">{currentTopic.title}</h1>
-            <p className="text-lg text-gray-700 leading-relaxed">{currentTopic.summary}</p>
+            <div className="space-y-4">
+              <TopicContent 
+                content={showDetailedSummary ? currentTopic.detailedSummary : currentTopic.summary}
+                onItemClick={handleListItemClick}
+                isLoading={loadingState.isLoading}
+              />
+              <button
+                onClick={() => setShowDetailedSummary(!showDetailedSummary)}
+                className="text-blue-500 hover:text-blue-600 text-sm font-medium flex items-center gap-1"
+              >
+                {showDetailedSummary ? (
+                  <>
+                    <span>Show Less</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M14.707 12.707a1 1 0 01-1.414 0L10 9.414l-3.293 3.293a1 1 0 01-1.414-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 010 1.414z" clipRule="evenodd" />
+                    </svg>
+                  </>
+                ) : (
+                  <>
+                    <span>Show More</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {currentTopic.examples.length > 0 && (

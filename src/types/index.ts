@@ -17,11 +17,21 @@ export interface ExplorePath {
   researchAreas: string;
 }
 
+export interface ListItem {
+  text: string;
+  description?: string;
+}
+
+export interface TopicContent {
+  text: string;
+  lists?: ListItem[][];  // Array of lists, each list is an array of items
+}
+
 export interface Topic {
   id: string;
   title: string;
-  summary: string;
-  detailedSummary: string;
+  summary: TopicContent;
+  detailedSummary: TopicContent;
   examples: Example[];
   explorePaths: ExplorePath[];
   connections: Connection[];
