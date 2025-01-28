@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { v4 as uuidv4 } from 'uuid';
+import { NextRequest } from 'next/server';
 import { generateTopicExploration } from '@/lib/claude';
+import { loadingMessages } from '@/lib/loadingStates';
 
 // Assuming the structure of subtopics and connections
 interface Subtopic {
@@ -62,74 +62,72 @@ interface Application {
 }
 
 export async function POST(request: NextRequest) {
+  console.log('API route called');
+  
   try {
-    // Validate request body
-    const body = await request.json().catch(() => null);
-    if (!body?.topic) {
-      return NextResponse.json(
-        { error: 'Missing required field: topic' },
-        { status: 400 }
-      );
-    }
+    const body = await request.json();
+    console.log('Request body:', body);
 
-    const { topic, parentId, depth = 0 } = body;
+    const { topic, parentId, depth } = body;
 
-    console.log('Processing exploration request:', { topic, parentId, depth });
+    // Create encoder for sending events
+    const encoder = new TextEncoder();
 
-    const exploration = await generateTopicExploration(
-      topic,
-      depth > 0 ? `This is a subtopic of: ${parentId}` : ''
-    );
+    // Create a transform stream
+    const stream = new TransformStream();
+    const writer = stream.writable.getWriter();
 
-    // Construct the response with enhanced data
-    const explorationData = {
-      id: uuidv4(),
-      title: topic,
-      summary: exploration.summary,
-      subtopics: exploration.subtopics.map((st: any) => ({
-        id: uuidv4(),
-        title: st.title,
-        description: st.description,
-        keyTerms: st.keyTerms?.map((term: any) => ({
-          name: term.name,
-          definition: term.definition
-        })) || [],
-        examples: st.examples?.map((ex: any) => ({
-          title: ex.title,
-          description: ex.description
-        })) || [],
-        exploreDeeper: st.exploreDeeper?.map((path: any) => ({
-          title: path.title,
-          description: path.description,
-          concepts: path.concepts,
-          relevantTopics: path.relevantTopics,
-          researchAreas: path.researchAreas
-        })) || []
-      })),
-      connections: exploration.connections?.map((conn: any) => ({
-        id: uuidv4(),
-        title: conn.title,
-        description: conn.description
-      })) || [],
-      depth
+    // Function to send SSE messages with proper formatting
+    const sendEvent = async (type: string, data: any) => {
+      const event = `data: ${JSON.stringify({ type, ...data })}\n\n`;
+      console.log('Sending event:', event.trim());
+      await writer.write(encoder.encode(event));
     };
 
-    console.log('Exploration data:', JSON.stringify(explorationData, null, 2));
-    return NextResponse.json(explorationData);
-  } catch (error) {
-    console.error('Error in explore API:', error);
-    if (error instanceof Error) {
-      console.error('Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      });
-    }
+    // Create the response with appropriate headers
+    const response = new Response(stream.readable, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+      },
+    });
 
-    // Return a more specific error message if possible
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    return NextResponse.json(
-      { error: errorMessage },
+    // Start the exploration process in the background
+    (async () => {
+      try {
+        // Send initial progress
+        await sendEvent('progress', { message: loadingMessages.initial, progress: 0 });
+
+        const result = await generateTopicExploration(
+          topic,
+          parentId ? `${parentId} > ${topic}` : topic,
+          async (message: string, progress: number) => {
+            await sendEvent('progress', { message, progress });
+          }
+        );
+
+        // Send the final result
+        await sendEvent('data', { result });
+        
+        // Send completion event
+        await sendEvent('progress', { message: loadingMessages.complete, progress: 100 });
+      } catch (error) {
+        console.error('Error during exploration:', error);
+        await sendEvent('error', { 
+          message: error instanceof Error ? error.message : loadingMessages.error 
+        });
+      } finally {
+        // Close the stream
+        await writer.close();
+      }
+    })();
+
+    return response;
+  } catch (error) {
+    console.error('Error processing request:', error);
+    return new Response(
+      JSON.stringify({ error: 'Failed to process request' }), 
       { status: 500 }
     );
   }

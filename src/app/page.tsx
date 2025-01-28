@@ -1,249 +1,371 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Topic } from '@/types';
+import React, { useState, useEffect } from 'react';
+import { Topic, ExplorePath, PathHistory, Example } from '@/types';
 import { useExploration } from '@/context/ExplorationContext';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
+import { LoadingState, defaultLoadingState } from '@/lib/loadingStates';
 
 export default function Home() {
   const [searchTerm, setSearchTerm] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [currentTopic, setCurrentTopic] = useState<Topic | null>(null);
+  const [loadingState, setLoadingState] = useState<LoadingState>(defaultLoadingState);
   const [error, setError] = useState<string | null>(null);
-  const { currentTopic, setCurrentTopic, addToExploration } = useExploration();
+  const { addToExploration } = useExploration();
 
-  const handleSearch = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!searchTerm.trim()) return;
+  // Reset loading state when component unmounts
+  useEffect(() => {
+    return () => {
+      setLoadingState(defaultLoadingState);
+    };
+  }, []);
 
-    setIsLoading(true);
-    setError(null);
-
+  // Shared function to handle API calls
+  const handleExplorationRequest = async (
+    topic: string,
+    parentId?: string,
+    depth: number = 0,
+    context?: string,
+    previousPath: PathHistory[] = []
+  ) => {
     try {
-      const response = await fetch('/api/explore', {
+      console.log('Making API request for:', topic);
+      const response = await fetch('http://localhost:3001/api/explore', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-          topic: searchTerm.trim(),
-          depth: 0
+          topic: topic.trim(),
+          parentId,
+          depth,
+          context,
+          pathHistory: previousPath
         }),
       });
-      
-      const data = await response.json();
-      
+
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch topic');
+        const errorText = await response.text();
+        console.error('API Error:', errorText);
+        throw new Error(`API request failed: ${response.statusText}`);
       }
-      
-      setCurrentTopic(data);
-      addToExploration('root', data);
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response stream available');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let hasReceivedData = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          console.log('Stream complete');
+          // If we received data but no completion event, force completion
+          if (hasReceivedData) {
+            setLoadingState({
+              isLoading: false,
+              message: 'Exploration complete!',
+              progress: 100
+            });
+          }
+          break;
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        console.log('Received chunk:', chunk);
+        
+        buffer += chunk;
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim() === '') continue;
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(5));
+              console.log('Parsed event:', data);
+
+              if (data.type === 'progress') {
+                console.log('Updating progress:', data.progress);
+                setLoadingState({
+                  isLoading: data.progress < 100,
+                  message: data.message,
+                  progress: data.progress
+                });
+              } else if (data.type === 'data') {
+                console.log('Received data:', data.result);
+                hasReceivedData = true;
+                const topicData = {
+                  ...data.result,
+                  id: Math.random().toString(36).substring(7),
+                  title: topic.trim(),
+                  depth,
+                  pathHistory: previousPath,
+                  explorePaths: data.result.explorePaths.map((path: any) => ({
+                    ...path,
+                    relevantTopics: path.relevantTopics || 'None specified',
+                    researchAreas: path.researchAreas || 'None specified'
+                  }))
+                };
+                setCurrentTopic(topicData);
+                addToExploration(parentId || 'root', topicData);
+              } else if (data.type === 'error') {
+                console.error('Received error event:', data.message);
+                throw new Error(data.message);
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data:', e, 'Line:', line);
+              throw e;
+            }
+          }
+        }
+      }
     } catch (error) {
-      console.error('Error fetching topic:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch topic');
-    } finally {
-      setIsLoading(false);
+      console.error('Error in exploration:', error);
+      setError(error instanceof Error ? error.message : 'An error occurred');
+      setLoadingState({
+        isLoading: false,
+        message: 'Error occurred',
+        progress: 0
+      });
     }
+  };
+
+  const handleSearch = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!searchTerm.trim()) return;
+
+    // Reset states
+    setCurrentTopic(null);
+    setError(null);
+    setLoadingState({ isLoading: true, message: 'Starting exploration...', progress: 0 });
+
+    await handleExplorationRequest(searchTerm, undefined, 0, undefined, []);
   };
 
   const handleSubtopicClick = async (subtopic: { id: string; title: string }) => {
     if (!currentTopic) return;
     
-    setIsLoading(true);
     setError(null);
+    setLoadingState({ isLoading: true, message: 'Starting exploration...', progress: 0 });
 
-    try {
-      const response = await fetch('/api/explore', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          topic: subtopic.title,
-          parentId: currentTopic.id,
-          depth: currentTopic.depth + 1
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch subtopic');
-      }
-
-      setCurrentTopic(data);
-      addToExploration(currentTopic.id, data);
-    } catch (error) {
-      console.error('Error fetching subtopic:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch subtopic');
-    } finally {
-      setIsLoading(false);
-    }
+    await handleExplorationRequest(
+      subtopic.title,
+      currentTopic.id,
+      currentTopic.depth + 1
+    );
   };
 
-  const handleExplorePathClick = async (path: { title: string; description: string }) => {
+  const handleExplorePathClick = async (path: ExplorePath) => {
     if (!currentTopic) return;
     
-    setIsLoading(true);
     setError(null);
+    setLoadingState({ isLoading: true, message: 'Starting exploration...', progress: 0 });
 
-    try {
-      const response = await fetch('/api/explore', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          topic: path.title,
-          parentId: currentTopic.id,
-          depth: currentTopic.depth + 1,
-          context: path.description // Pass the path description as context
-        }),
-      });
+    // Create a more specific context that includes the full path history
+    const newPathHistory = [
+      ...currentTopic.pathHistory,
+      { title: currentTopic.title, description: path.description }
+    ];
+    
+    const pathContext = newPathHistory
+      .map((p, i) => `${i + 1}. ${p.title}`)
+      .join(' > ');
 
-      const data = await response.json();
+    const explorationContext = `Exploration path: ${pathContext} > ${path.title}. Currently exploring "${path.title}" with focus on: ${path.description}. Please maintain relevance to the entire exploration chain.`;
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch path');
-      }
+    await handleExplorationRequest(
+      path.title,
+      currentTopic.id,
+      currentTopic.depth + 1,
+      explorationContext,
+      newPathHistory
+    );
+  };
 
-      setCurrentTopic(data);
-      addToExploration(currentTopic.id, data);
-    } catch (error) {
-      console.error('Error fetching path:', error);
-      setError(error instanceof Error ? error.message : 'Failed to fetch path');
-    } finally {
-      setIsLoading(false);
-    }
+  const handleExampleClick = async (example: Example) => {
+    if (!currentTopic) return;
+    
+    setError(null);
+    setLoadingState({ isLoading: true, message: 'Starting exploration...', progress: 0 });
+
+    const newPathHistory = [
+      ...currentTopic.pathHistory,
+      { title: currentTopic.title, description: example.description }
+    ];
+    
+    const pathContext = newPathHistory
+      .map((p, i) => `${i + 1}. ${p.title}`)
+      .join(' > ');
+
+    const explorationContext = `Exploration path: ${pathContext} > ${example.title}. Currently exploring this example with focus on: ${example.description}. Please maintain relevance to the entire exploration chain, especially the root topic "${newPathHistory[0].title}".`;
+
+    await handleExplorationRequest(
+      example.title,
+      currentTopic.id,
+      currentTopic.depth + 1,
+      explorationContext,
+      newPathHistory
+    );
   };
 
   return (
-    <div className="h-full flex flex-col gap-4">
-      <form onSubmit={handleSearch} className="flex gap-2">
+    <div className="min-h-screen flex flex-col p-4 max-w-7xl mx-auto">
+      <form onSubmit={handleSearch} className="flex gap-2 mb-6">
         <input
           type="text"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           placeholder="Enter a topic to explore..."
-          className="flex-1 p-2 border rounded"
-          disabled={isLoading}
+          className="flex-1 p-2 border rounded shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+          disabled={loadingState.isLoading}
         />
         <button 
           type="submit"
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={isLoading || !searchTerm.trim()}
+          className="px-6 py-2 bg-blue-500 text-white rounded shadow-sm hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center min-w-[120px]"
+          disabled={loadingState.isLoading || !searchTerm.trim()}
         >
-          {isLoading ? 'Exploring...' : 'Explore'}
+          {loadingState.isLoading ? <LoadingSpinner size="small" /> : 'Explore'}
         </button>
       </form>
 
-      {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded text-red-600">
+      {loadingState.isLoading && (
+        <div className="flex flex-col items-center justify-center py-12">
+          <LoadingSpinner size="large" message={loadingState.message} />
+          <div className="w-full max-w-md mt-6">
+            <div className="w-full bg-gray-200 rounded-full h-2">
+              <div 
+                className="bg-blue-500 h-2 rounded-full transition-all duration-300 ease-in-out"
+                style={{ width: `${loadingState.progress}%` }}
+              />
+            </div>
+            <div className="text-center text-sm text-gray-500 mt-2">
+              {loadingState.progress}%
+            </div>
+          </div>
+        </div>
+      )}
+
+      {error && !loadingState.isLoading && (
+        <div className="p-4 my-6 bg-red-50 border border-red-200 rounded-lg text-red-600">
           {error}
         </div>
       )}
 
-      {isLoading && !currentTopic && (
-        <div className="flex-1 flex items-center justify-center text-gray-500">
-          Exploring your topic...
+      {currentTopic && !loadingState.isLoading && (
+        <div className="flex-1 space-y-8">
+          {currentTopic.pathHistory.length > 0 && (
+            <nav className="flex items-center space-x-2 text-sm text-gray-500">
+              {currentTopic.pathHistory.map((path, idx) => (
+                <React.Fragment key={idx}>
+                  <span className="hover:text-gray-700 cursor-pointer" title={path.description}>
+                    {path.title}
+                  </span>
+                  <span className="text-gray-400">/</span>
+                </React.Fragment>
+              ))}
+              <span className="font-medium text-gray-900">{currentTopic.title}</span>
+            </nav>
+          )}
+
+          <div className="bg-white rounded-lg shadow-sm p-6 space-y-4">
+            <h1 className="text-3xl font-bold text-gray-900">{currentTopic.title}</h1>
+            <p className="text-lg text-gray-700 leading-relaxed">{currentTopic.summary}</p>
+          </div>
+
+          {currentTopic.examples.length > 0 && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-semibold text-gray-900">Notable Examples</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {currentTopic.examples.map((example, idx) => (
+                  <div 
+                    key={`example-${idx}`}
+                    className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow border border-gray-100 overflow-hidden"
+                  >
+                    <div className="p-6 space-y-4">
+                      <div>
+                        <h3 className="text-xl font-semibold text-gray-900 mb-2">{example.title}</h3>
+                        <p className="text-gray-600">{example.description}</p>
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-gray-900">Significance</h4>
+                        <p className="mt-2 text-gray-600">{example.significance}</p>
+                      </div>
+                      <button
+                        onClick={() => handleExampleClick(example)}
+                        className="w-full mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        disabled={loadingState.isLoading}
+                      >
+                        Explore This Example
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          <div className="space-y-6">
+            <h2 className="text-2xl font-semibold text-gray-900">Explore Deeper</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {currentTopic.explorePaths.map((path, idx) => (
+                <div 
+                  key={`${currentTopic.id}-${idx}`} 
+                  className="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow border border-gray-100 overflow-hidden"
+                >
+                  <div className="p-6 space-y-6">
+                    <div>
+                      <h3 className="text-xl font-semibold text-gray-900 mb-2">{path.title}</h3>
+                      <p className="text-gray-600">{path.description}</p>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <h4 className="font-medium text-gray-900">Key Concepts</h4>
+                        <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-600 text-sm">
+                          {path.concepts}
+                        </div>
+                      </div>
+
+                      <div>
+                        <h4 className="font-medium text-gray-900">Relevant Topics</h4>
+                        <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-600 text-sm">
+                          {path.relevantTopics}
+                        </div>
+                      </div>
+
+                      <div>
+                        <h4 className="font-medium text-gray-900">Research Areas</h4>
+                        <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-600 text-sm">
+                          {path.researchAreas}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleExplorePathClick(path)}
+                      disabled={loadingState.isLoading}
+                      className="w-full mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Explore This Path
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
-      {!isLoading && !error && currentTopic ? (
-        <div className="flex-1 overflow-y-auto">
-          <h1 className="text-2xl font-bold mb-4">{currentTopic.title}</h1>
-          <p className="mb-6">{currentTopic.summary}</p>
-          
-          <h2 className="text-xl font-semibold mb-3">Explore Deeper</h2>
-          <div className="grid grid-cols-1 gap-6">
-            {currentTopic.subtopics.map((subtopic) => (
-              <div key={subtopic.id} className="border rounded-lg p-6">
-                <h3 className="text-lg font-semibold mb-2">{subtopic.title}</h3>
-                <p className="text-gray-600 mb-4">{subtopic.description}</p>
-                
-                {subtopic.keyTerms && subtopic.keyTerms.length > 0 && (
-                  <div className="mb-4">
-                    <h4 className="font-medium mb-2">Key Terms</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      {subtopic.keyTerms.map((term, idx) => (
-                        <div key={idx} className="bg-gray-50 p-3 rounded">
-                          <div className="font-medium">{term.name}</div>
-                          <div className="text-sm text-gray-600">{term.definition}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {subtopic.examples && subtopic.examples.length > 0 && (
-                  <div className="mb-4">
-                    <h4 className="font-medium mb-2">Examples</h4>
-                    <div className="space-y-3">
-                      {subtopic.examples.map((example, idx) => (
-                        <div key={idx} className="bg-gray-50 p-3 rounded">
-                          <div className="font-medium">{example.title}</div>
-                          <div className="text-sm text-gray-600">{example.description}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {subtopic.exploreDeeper && subtopic.exploreDeeper.length > 0 && (
-                  <div>
-                    <h4 className="font-medium mb-2">Explore Deeper Paths</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      {subtopic.exploreDeeper.map((path, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => handleExplorePathClick(path)}
-                          disabled={isLoading}
-                          className="text-left bg-gray-50 p-4 rounded hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          <div className="font-medium mb-1">{path.title}</div>
-                          <p className="text-sm text-gray-600 mb-2">{path.description}</p>
-                          <div className="text-sm">
-                            <div className="text-blue-600 mb-1">
-                              <span className="font-medium">Key Concepts:</span> {path.concepts}
-                            </div>
-                            <div className="text-green-600 mb-1">
-                              <span className="font-medium">Related Topics:</span> {path.relevantTopics}
-                            </div>
-                            <div className="text-purple-600">
-                              <span className="font-medium">Research Areas:</span> {path.researchAreas}
-                            </div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  className="mt-4 w-full p-3 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                  onClick={() => handleSubtopicClick(subtopic)}
-                  disabled={isLoading}
-                >
-                  Explore {subtopic.title}
-                </button>
-              </div>
-            ))}
-          </div>
-
-          <h2 className="text-xl font-semibold mt-6 mb-3">Interdisciplinary Connections</h2>
-          <div className="space-y-4">
-            {currentTopic.connections.map((connection) => (
-              <div key={connection.id} className="p-4 border rounded">
-                <h3 className="font-semibold">{connection.title}</h3>
-                <p>{connection.description}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : !isLoading && !error ? (
-        <div className="flex-1 flex items-center justify-center text-gray-500">
+      {!currentTopic && !loadingState.isLoading && !error && (
+        <div className="flex-1 flex items-center justify-center text-gray-500 text-lg">
           Enter a topic above to begin your exploration
         </div>
-      ) : null}
+      )}
     </div>
   );
 } 

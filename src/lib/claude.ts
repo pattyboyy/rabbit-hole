@@ -1,5 +1,8 @@
 import { env } from '@/config/env';
 import { parseStringPromise } from 'xml2js';
+import { LRUCache } from 'lru-cache';
+import { loadingMessages } from './loadingStates';
+import { PathHistory } from '@/types';
 
 interface ClaudeResponse {
   id: string;
@@ -17,300 +20,263 @@ interface ClaudeResponse {
   };
 }
 
-export async function generateTopicExploration(topic: string, parentContext: string = '') {
-  try {
-    // Log environment configuration
-    console.log('Environment Check:', {
-      apiKeyPresent: !!env.CLAUDE_API_KEY,
-      apiKeyLength: env.CLAUDE_API_KEY?.length || 0,
-    });
+const SENSITIVE_TOPICS_MESSAGE = "This topic involves sensitive or controversial subject matter. While we can explore factual historical and legal information, we'll maintain appropriate boundaries and focus on verified, publicly available information.";
 
-    console.log('Making request to Claude API for topic:', topic);
-    const requestBody = {
-      model: 'claude-3-5-haiku-20241022',
-      max_tokens: 5000,
-      temperature: 0.9,
-      system: "You are an expert knowledge exploration assistant. Your task is to help users explore topics in depth. Always respond in well-structured XML format. Focus on generating detailed subtopics with multiple explore deeper paths.",
-      messages: [{
-        role: 'user',
-        content: `Generate a comprehensive exploration of the topic "${topic}". Include:
+// Initialize LRU cache with a maximum of 100 items that expire after 1 hour
+const responseCache = new LRUCache({
+  max: 100,
+  ttl: 1000 * 60 * 60, // 1 hour
+});
 
-1. A thorough summary (4-5 paragraphs) that covers:
-   - Core concepts and fundamental principles
-   - Historical context and development
-   - Current significance and applications
-   - Key challenges and ongoing debates
-   - Future implications and trends
+// Move XML pattern to top with other constants
+const XML_PATTERN = /<exploration>[\s\S]*?<\/exploration>/;
+const API_TIMEOUT = 30000; // 30 seconds timeout
 
-2. 10-12 relevant subtopics with detailed descriptions that include:
-   - Key concepts and terminology
-   - Real-world examples and case studies
-   - Common misconceptions
-   - Latest developments or research
-   - 5-6 explore deeper paths for each subtopic, including:
-     * Related advanced concepts
-     * Specialized areas of study
-     * Current research directions
-     * Emerging technologies or methodologies
-     * Controversial aspects or debates
-     * Historical developments and evolution
-
-Format your response in this exact XML structure:
-<exploration>
-  <summary>Comprehensive summary addressing all required points</summary>
-  <subtopics>
-    <topic>
-      <title>Subtopic title</title>
-      <description>Detailed description including examples and case studies</description>
-      <keyTerms>
-        <term>
-          <name>Technical term</name>
-          <definition>Clear definition with examples</definition>
-        </term>
-      </keyTerms>
-      <examples>
-        <example>
-          <title>Example title</title>
-          <description>Detailed example description</description>
-        </example>
-      </examples>
-      <exploreDeeper>
-        <path>
-          <title>Advanced Concepts Path</title>
-          <description>Exploration of advanced theoretical frameworks and concepts</description>
-          <concepts>Key advanced concepts to explore</concepts>
-          <relevantTopics>Advanced theoretical areas</relevantTopics>
-          <researchAreas>Theoretical research directions</researchAreas>
-        </path>
-        <path>
-          <title>Research Directions Path</title>
-          <description>Current and emerging research directions in the field</description>
-          <concepts>Research methodologies and approaches</concepts>
-          <relevantTopics>Current research topics</relevantTopics>
-          <researchAreas>Active research areas and opportunities</researchAreas>
-        </path>
-        <path>
-          <title>Technological Applications Path</title>
-          <description>Practical applications and technological implementations</description>
-          <concepts>Applied concepts and technologies</concepts>
-          <relevantTopics>Implementation areas</relevantTopics>
-          <researchAreas>Technology development directions</researchAreas>
-        </path>
-        <path>
-          <title>Historical Development Path</title>
-          <description>Evolution and historical significance of key developments</description>
-          <concepts>Historical frameworks and paradigms</concepts>
-          <relevantTopics>Historical context and evolution</relevantTopics>
-          <researchAreas>Historical analysis methods</researchAreas>
-        </path>
-        <path>
-          <title>Controversies and Debates Path</title>
-          <description>Major debates and controversial aspects in the field</description>
-          <concepts>Competing theories and viewpoints</concepts>
-          <relevantTopics>Controversial areas and debates</relevantTopics>
-          <researchAreas>Critical analysis approaches</researchAreas>
-        </path>
-        <path>
-          <title>Future Directions Path</title>
-          <description>Emerging trends and future possibilities</description>
-          <concepts>Future scenarios and possibilities</concepts>
-          <relevantTopics>Emerging trends and developments</relevantTopics>
-          <researchAreas>Future-oriented research</researchAreas>
-        </path>
-      </exploreDeeper>
-    </topic>
-  </subtopics>
-  <context>
-    <historical>
-      <evolution>Historical evolution and key developments</evolution>
-      <keyEvents>
-        <event>
-          <date>Date or period</date>
-          <description>Event description and significance</description>
-        </event>
-      </keyEvents>
-    </historical>
-    <current>
-      <state>Current state of the field</state>
-      <trends>Emerging trends and developments</trends>
-      <challenges>Current challenges and obstacles</challenges>
-    </current>
-    <cultural>
-      <perspectives>Different viewpoints and interpretations</perspectives>
-      <impact>Societal and cultural implications</impact>
-    </cultural>
-  </context>
-</exploration>
-
-Important: 
-- Ensure your response is valid XML and follows this exact structure
-- MUST include all 6 explore deeper paths for each subtopic as shown in the example
-- Each explore deeper path should focus on a different aspect (advanced concepts, research, technology, history, controversies, future)
-- Provide specific, concrete examples rather than general statements
-- Include recent developments and cutting-edge research
-- Balance technical depth with accessibility
-- Make sure explore deeper paths are substantive and lead to meaningful areas of further study
-- Include comprehensive analysis in the summary and context sections`
-      }]
+function handleSensitiveTopic(topic: string): { isAllowed: boolean; message?: string } {
+  const lowercaseTopic = topic.toLowerCase();
+  
+  // Topics that should be handled with extra care
+  if (lowercaseTopic.includes('epstein') || 
+      // Add other sensitive topics as needed
+      false) {
+    return {
+      isAllowed: true,
+      message: SENSITIVE_TOPICS_MESSAGE
     };
+  }
 
-    console.log('Claude API Request:', {
-      url: 'https://api.anthropic.com/v1/messages',
-      headers: {
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01'
-      },
-      body: requestBody
-    });
+  return { isAllowed: true };
+}
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
-        'x-api-key': env.CLAUDE_API_KEY
-      },
-      body: JSON.stringify(requestBody)
-    });
+export type ProgressCallback = (message: string, progress: number) => void;
 
-    console.log('Claude API Response Status:', response.status);
-    console.log('Claude API Response Headers:', Object.fromEntries(response.headers.entries()));
+export async function generateTopicExploration(
+  topic: string, 
+  parentContext: string = '',
+  onProgress?: ProgressCallback,
+  previousPath: PathHistory[] = []
+) {
+  try {
+    // Update progress: Initial
+    onProgress?.(loadingMessages.initial, 0);
 
-    if (!response.ok) {
-      let errorMessage = `Claude API call failed: ${response.statusText}`;
-      try {
-        const responseText = await response.text();
-        console.error('Claude API Error Response:', responseText);
-        try {
-          const errorData = JSON.parse(responseText);
-          console.error('Claude API Error Data:', errorData);
-          errorMessage = errorData.error?.message || errorMessage;
-        } catch (parseError) {
-          console.error('Failed to parse error response as JSON:', parseError);
-        }
-      } catch (e) {
-        console.error('Failed to read error response:', e);
-      }
-      throw new Error(errorMessage);
+    const cacheKey = `${topic}-${parentContext}`;
+    const cachedResponse = responseCache.get(cacheKey);
+    if (cachedResponse) {
+      onProgress?.(loadingMessages.complete, 100);
+      return cachedResponse;
     }
 
-    // Read the response as text first
-    const responseText = await response.text();
-    console.log('Claude API Raw Response:', responseText);
+    // Update progress: Checking topic
+    onProgress?.(loadingMessages.processing, 20);
 
-    // Log the full response text for debugging
-    console.log('Full API Response Text:', responseText);
-
-    // Check if the response is JSON and log it
-    try {
-      const jsonResponse = JSON.parse(responseText);
-      console.log('Parsed JSON Response:', jsonResponse);
-    } catch (jsonParseError) {
-      console.error('Response is not valid JSON:', jsonParseError);
+    const { isAllowed, message } = handleSensitiveTopic(topic);
+    if (!isAllowed) {
+      onProgress?.(loadingMessages.complete, 100);
+      return { summary: message, explorePaths: [], connections: [] };
     }
 
-    // Then parse as JSON
-    const data: ClaudeResponse = JSON.parse(responseText);
+    // Update progress: Fetching
+    onProgress?.(loadingMessages.fetching, 40);
+
+    const sensitivityContext = message ? `\n\n${message}` : '';
     
-    if (!data.content?.[0]?.text) {
-      console.error('Unexpected Claude API response format:', data);
-      throw new Error('Invalid response format from Claude API');
+    // Create a more detailed context string that includes the full exploration path
+    const pathContext = previousPath.map((p: PathHistory, i: number) => 
+      `${i + 1}. ${p.title} (${p.description})`
+    ).join('\n');
+
+    const rootTopic = previousPath[0]?.title || topic;
+    
+    // Build a comprehensive context that includes key information about the topic chain
+    const contextString = parentContext ? 
+      `EXPLORATION CONTEXT:
+Root Topic: ${rootTopic}
+Current Topic: "${topic}"
+Exploration Path:
+${pathContext}
+Current Focus: ${parentContext}
+
+TOPIC DEFINITION:
+"${topic}" is being explored specifically as a concept within ${rootTopic}. Use this context to inform your response.
+
+IMPORTANT CONTEXT RULES:
+1. You have sufficient context to provide a response about "${topic}" within ${rootTopic}
+2. Every response MUST be directly related to ${rootTopic}
+3. All examples must be from ${rootTopic} lore/universe
+4. All exploration paths must maintain direct relevance to ${rootTopic}
+5. Do not provide general or real-world examples unless explicitly comparing them to ${rootTopic}
+6. Maintain the themes, terminology, and concepts specific to ${rootTopic}
+7. Do not question or express uncertainty about the context - use the context provided
+8. If a term appears in the exploration path, it is part of ${rootTopic} and should be explained within that context
+
+Your response should read as if it's a dedicated entry in the ${rootTopic} encyclopedia or sourcebook.${sensitivityContext}` 
+      : sensitivityContext;
+
+    // Add timeout handling
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT);
+
+    try {
+      console.log('Making API request to Claude...', env.CLAUDE_API_URL);
+      const response = await fetch(env.CLAUDE_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',  // Corrected API version
+          'x-api-key': env.CLAUDE_API_KEY,
+          'accept': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 4000,
+          temperature: 0.7,
+          system: `You are an expert knowledge exploration assistant specializing in maintaining deep contextual relevance throughout topic chains. 
+You MUST ALWAYS respond in valid XML format using the provided template, even if you think you need more context.
+Never express uncertainty about the context - if a topic appears in the exploration path, treat it as a valid concept within the root topic's universe.
+
+When exploring subtopics, you must:
+1. Keep all content strictly within the context of the root topic
+2. Use terminology and examples specific to the topic's universe/domain
+3. Maintain thematic consistency with the exploration chain
+4. Never drift into general or unrelated topics
+5. Treat each response as if writing an entry in the topic's official sourcebook
+6. ALWAYS return valid XML with relevant content based on the provided context
+7. Never question the validity or existence of terms in the exploration path
+8. If a term appears in the context, treat it as canonical to the universe
+
+The XML format is non-negotiable and must be maintained in all responses.
+Your role is to explain concepts within their given context, not question their validity.`,
+          messages: [{
+            role: 'user',
+            content: `Explore "${topic}" within the following context:\n\n${contextString}\n\nYou MUST respond using this exact XML format:\n<exploration>\n<summary>Concise summary focused on the current context. If you need more context, include that message here while still providing best-effort exploration.</summary>\n<examples>\n<example><title>Title of relevant example</title><description>Description</description><significance>Why this example matters</significance></example>\n</examples>\n<explorePaths><path><title>Title</title><description>Description</description><concepts>Key concepts and terms</concepts><relevantTopics>Related areas of study</relevantTopics><researchAreas>Research directions</researchAreas></path></explorePaths></exploration>`
+          }]
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+      console.log('Received response from Claude:', response.status, response.statusText);
+
+      // Update progress: Processing response
+      onProgress?.(loadingMessages.processing, 60);
+
+      let responseText = '';
+      try {
+        responseText = await response.text();
+        console.log('Raw response:', responseText.substring(0, 200) + '...');
+        
+        if (!response.ok) {
+          throw new Error(`API call failed: ${response.status} - ${response.statusText} - ${responseText}`);
+        }
+
+        const data: ClaudeResponse = JSON.parse(responseText);
+        console.log('Response parsed successfully:', data.content?.[0]?.type);
+        
+        const xmlContent = data.content?.[0]?.text;
+        console.log('XML Content:', xmlContent ? xmlContent.substring(0, 100) + '...' : 'No content');
+        
+        if (!xmlContent) {
+          throw new Error('Invalid response from API: No content received');
+        }
+
+        // Update progress: Analyzing
+        onProgress?.(loadingMessages.analyzing, 80);
+
+        const xmlMatch = XML_PATTERN.exec(xmlContent);
+        if (!xmlMatch) {
+          console.error('Failed to match XML pattern. Raw content:', xmlContent);
+          throw new Error('Failed to parse XML response: No valid XML found');
+        }
+
+        // Update progress: Finalizing
+        onProgress?.(loadingMessages.finalizing, 90);
+
+        const result = await parseClaudeResponse(xmlMatch[0]);
+        responseCache.set(cacheKey, result);
+
+        // Update progress: Complete
+        onProgress?.(loadingMessages.complete, 100);
+        
+        return result;
+
+      } catch (parseError: unknown) {
+        console.error('Error processing response:', parseError);
+        console.error('Raw response text:', responseText);
+        throw new Error(`Failed to process Claude response: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+      }
+
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Request timed out after 30 seconds');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
-    const xmlContent = data.content[0].text;
-    console.log('Claude API XML Response:', xmlContent);
-
-    // Extract the XML content from the response
-    const xmlMatch = xmlContent.match(/<exploration>[\s\S]*<\/exploration>/);
-    if (!xmlMatch) {
-      console.error('No XML found in response:', xmlContent);
-      throw new Error('No XML found in Claude response');
-    }
-
-    const cleanXml = xmlMatch[0].trim();
-    console.log('Cleaned XML:', cleanXml);
-
-    return parseClaudeResponse(cleanXml);
   } catch (error) {
-    console.error('Error in generateTopicExploration:', {
-      name: error instanceof Error ? error.name : 'Unknown',
-      message: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : 'No stack trace',
-      error
-    });
+    // Update progress: Error
+    onProgress?.(loadingMessages.error, 100);
+    console.error('Error in generateTopicExploration:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
 
 async function parseClaudeResponse(xmlContent: string) {
   try {
-    console.log('Attempting to parse XML:', xmlContent);
+    // Simplified cleaning
+    const cleanXml = xmlContent
+      .replace(/&(?!amp;|lt;|gt;|quot;|apos;)/g, '&amp;')
+      .trim();
 
-    // Parse XML with explicit array handling for paths
-    const result = await parseStringPromise(xmlContent, { 
-      explicitArray: true,  // Changed to true to force arrays
-      mergeAttrs: true 
+    // Streamlined parsing options
+    const result = await parseStringPromise(cleanXml, { 
+      explicitArray: false,
+      mergeAttrs: true,
+      normalize: true,
+      tagNameProcessors: [(name) => name.toLowerCase()]
     });
 
-    console.log('Parsed XML Result:', result);
-
-    if (!result.exploration || !result.exploration.summary || !result.exploration.subtopics) {
+    if (!result.exploration?.summary || !result.exploration?.explorepaths?.path) {
       throw new Error('Invalid XML structure: missing required elements');
     }
 
-    const summary = result.exploration.summary[0];
+    const summary = result.exploration.summary;
     
-    // Parse subtopics with enhanced structure
-    const subtopics = result.exploration.subtopics[0]?.topic?.map((t: any) => {
-      console.log('Processing subtopic:', t.title?.[0]);
-      
-      // Get all paths from the exploreDeeper section
-      const paths = t.exploreDeeper?.[0]?.path || [];
-      console.log(`Found ${paths.length} explore deeper paths for subtopic ${t.title?.[0]}`);
-      
-      return {
-        title: t.title?.[0] || '',
-        description: t.description?.[0] || '',
-        keyTerms: t.keyTerms?.[0]?.term?.map((term: any) => ({
-          name: term.name?.[0] || '',
-          definition: term.definition?.[0] || ''
-        })) || [],
-        examples: t.examples?.[0]?.example?.map((ex: any) => ({
-          title: ex.title?.[0] || '',
-          description: ex.description?.[0] || ''
-        })) || [],
-        exploreDeeper: paths.map((p: any) => ({
-          title: p.title?.[0] || '',
-          description: p.description?.[0] || '',
-          concepts: p.concepts?.[0] || '',
-          relevantTopics: p.relevantTopics?.[0] || '',
-          researchAreas: p.researchAreas?.[0] || ''
-        }))
-      };
-    }) || [];
+    // Parse examples
+    const examples = result.exploration.examples?.example ? 
+      (Array.isArray(result.exploration.examples.example) 
+        ? result.exploration.examples.example 
+        : [result.exploration.examples.example]
+      ).map((e: any) => ({
+        title: e.title || '',
+        description: e.description || '',
+        significance: e.significance || ''
+      })) 
+      : [];
+    
+    // Ensure path is always an array
+    const paths = Array.isArray(result.exploration.explorepaths.path) 
+      ? result.exploration.explorepaths.path 
+      : [result.exploration.explorepaths.path];
 
-    // Parse connections
-    const connections = result.exploration.connections?.[0]?.connection?.map((c: any) => ({
-      title: c.title?.[0] || '',
-      description: c.description?.[0] || ''
-    })) || [];
+    const explorePaths = paths.map((p: any) => ({
+      title: p.title || '',
+      description: p.description || '',
+      concepts: p.concepts || '',
+      relevantTopics: p.relevantTopics || '',
+      researchAreas: p.researchAreas || ''
+    }));
 
-    const parsedData = {
+    return {
       summary,
-      subtopics,
-      connections
+      examples,
+      explorePaths,
+      connections: []  // Simplified as we removed context from XML
     };
-
-    console.log('Successfully parsed response:', parsedData);
-    return parsedData;
   } catch (error) {
-    console.error('Error parsing XML response:', {
-      error,
-      xmlContent,
-      errorName: error instanceof Error ? error.name : 'Unknown',
-      errorMessage: error instanceof Error ? error.message : String(error),
-      errorStack: error instanceof Error ? error.stack : 'No stack trace',
-    });
+    console.error('Error parsing XML response:', error);
     throw new Error('Failed to parse Claude response');
   }
 } 

@@ -54,7 +54,7 @@ export default function ExplorationStats({
               <span className="font-medium">Depth:</span> {currentTopic.depth}
             </p>
             <p>
-              <span className="font-medium">Subtopics:</span> {currentTopic.subtopics.length}
+              <span className="font-medium">Explore Paths:</span> {currentTopic.explorePaths.length}
             </p>
           </div>
         </div>
